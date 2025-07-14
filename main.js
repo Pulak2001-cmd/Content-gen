@@ -8,6 +8,7 @@ const dotenv = require('dotenv');
 dotenv.config();
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const GOOGLE_TTS_API_KEY = process.env.GOOGLE_TTS_API_KEY || '';
 
 const INPUT_JSON = './content.json';
 const OUTPUT_DIR = './output_reel';
@@ -17,7 +18,7 @@ const VIDEO_WIDTH = 1080;
 const VIDEO_HEIGHT = 1920;
 
 async function generateSlideDetails(text, image_url, video_url) {
-    const prompt = `You are an expert content creator making engaging short-form educational videos.
+  const prompt = `You are an expert content creator making engaging short-form educational videos.
 
     Your task is to generate 4 to 6 engaging slides based on the content below.
     Each slide should include:
@@ -25,6 +26,9 @@ async function generateSlideDetails(text, image_url, video_url) {
     - description: A punchy one-liner to explain or tease the concept
     - imagePrompt: Descriptive, imaginative prompt for DALL-E 3
     - speakText: Engaging voiceover script for continuous storytelling (30-60 words)
+
+    IMPORTANT:
+    - All the contents will be in English.
     
     The slides should be concise and visual-rich to keep viewers engaged. The speakText should flow naturally from slide to slide, creating a cohesive narrative that hooks viewers and maintains their attention throughout the video.
     
@@ -63,16 +67,28 @@ async function generateSlideDetails(text, image_url, video_url) {
 }
 
 async function generateImage(prompt, imagePath) {
+  // const response = await openai.images.generate({
+  //   model: 'dall-e-3',
+  //   prompt,
+  //   size: '1024x1792',
+  //   quality: 'hd',
+  //   response_format: 'url'
+  // });
+  // const url = response.data[0].url;
+  // const res = await axios.get(url, { responseType: 'arraybuffer' });
+  // await fs.writeFile(imagePath, res.data);
+
   const response = await openai.images.generate({
-    model: 'dall-e-3',
-    prompt,
-    size: '1024x1792',
-    quality: 'hd',
-    response_format: 'url'
+    model: "gpt-image-1",
+    prompt: prompt,
+    n: 1,
+    size: '1024x1536',
+    quality: "medium"
   });
-  const url = response.data[0].url;
-  const res = await axios.get(url, { responseType: 'arraybuffer' });
-  await fs.writeFile(imagePath, res.data);
+
+  const imageBase64 = response.data[0].b64_json;
+  const imageBuffer = Buffer.from(imageBase64, 'base64');
+  fs.writeFileSync(imagePath, imageBuffer);
   return imagePath;
 }
 
@@ -90,6 +106,29 @@ async function generateAudio(text, audioPath) {
   });
   const buffer = Buffer.from(await response.arrayBuffer());
   await fs.writeFile(audioPath, buffer);
+  return audioPath;
+}
+
+async function generateAudioWithGoogle(text, audioPath) {
+  const requestBody = {
+    audioConfig: { audioEncoding: 'MP3', pitch: 0, speakingRate: 1 },
+    input: { text: text.replace(/"/g, '') },
+    voice: { languageCode: "en-IN", name: "en-IN-Wavenet-E" }
+  };
+  const response = await fetch(`https://us-central1-texttospeech.googleapis.com/v1beta1/text:synthesize?key=${GOOGLE_TTS_API_KEY}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(requestBody)
+  });
+
+  if (!response.ok) {
+    log(`Google TTS API error: ${response.status}`);
+    throw new Error(`Google TTS API error: ${response.status}`);
+  }
+
+  const result = await response.json();
+  const audioContent = Buffer.from(result.audioContent, 'base64');
+  await fs.writeFile(audioPath, audioContent);
   return audioPath;
 }
 
@@ -159,12 +198,12 @@ async function main() {
     console.log(slides, slides.length);
 
     const videoSlides = await Promise.all(
-        slides.map(async (slide, j) => {
-          const imagePath = await generateImage(slide.imagePrompt, path.join(tempDir, `image_${j}.jpg`));
-  
-          const audioPath = await generateAudio(slide.description, path.join(tempDir, `audio_${j}.mp3`));
-          return await generateVideoSlide(imagePath, audioPath, path.join(tempDir, `slide_${j}.mp4`));
-        })
+      slides.map(async (slide, j) => {
+        const imagePath = await generateImage(slide.imagePrompt, path.join(tempDir, `image_${j}.jpg`));
+
+        const audioPath = await generateAudioWithGoogle(slide.speakText, path.join(tempDir, `audio_${j}.mp3`));
+        return await generateVideoSlide(imagePath, audioPath, path.join(tempDir, `slide_${j}.mp4`));
+      })
     );
 
     // for (let j = 0; j < slides.length; j++) {
